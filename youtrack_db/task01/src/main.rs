@@ -4,7 +4,5 @@
 
 fn main() {
     println!("Hello, world!");
-    
-    let test: &[u8] = &[1;5];
 
 }

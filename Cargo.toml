@@ -2,3 +2,4 @@
 members = [
     "youtrack_db/task01"
 ]
+resolver = "2"

@@ -1,9 +1,7 @@
-use core::slice;
 use std::array;
 use std::fmt::Debug;
-use std::iter::from_fn;
 use std::sync::RwLock;
-use std::{borrow::Borrow, cmp::Ordering, ops::Deref};
+use std::cmp::Ordering;
 
 const CACHE_LINE_SIZE: usize = 128;
 const TREE_RADIX: usize = 16;
@@ -42,29 +40,33 @@ impl TSIMTree {
                     // There is no space in this node, so we must replace the key_segment in this node with the new segment.
                     // But what do we do with the old key? We dont know which
                     let old_key_fragment = node.get_segment(0).to_owned();
-                    let child = node.children[0].as_mut().expect("node.children[0] must be Some(..)");
+                    let child = node.children[0]
+                        .as_mut()
+                        .expect("node.children[0] must be Some(..)");
                     child.pushdown_children_under_key(&old_key_fragment);
 
-                    let (new_key_fragment,remaining_key)=key.split_at(old_key_fragment.len());
+                    let (new_key_fragment, remaining_key) = key.split_at(old_key_fragment.len());
 
                     node.set_segment(0, new_key_fragment);
                     let child = node.children[0].as_mut();
 
-                    let TSIMTreeNodeChild::Node(n) = child.expect("node.children[0] must be Some(..)") else {
-                            panic!("remaining_key is not empty, so new_node must be TSIMTreeNodeChild::Node(..)")
-                        };
+                    let TSIMTreeNodeChild::Node(n) =
+                        child.expect("node.children[0] must be Some(..)")
+                    else {
+                        panic!("remaining_key is not empty, so new_node must be TSIMTreeNodeChild::Node(..)")
+                    };
                     node = n;
                     key = remaining_key;
                 }
 
-                ResolvedChild::ExactMatch(segment,remaining_key ) => {
+                ResolvedChild::ExactMatch(segment, remaining_key) => {
                     let borrowed_child = node.children[segment].as_mut();
                     let child = borrowed_child.expect("children[child_idx] must be Some(..)");
                     match child {
                         TSIMTreeNodeChild::Value(old_val) if remaining_key.is_empty() => {
                             *old_val = v;
                             return;
-                        },
+                        }
                         TSIMTreeNodeChild::Value(old_val) => {
                             // The existing value is stored under a prefix of the new value.
                             // We must replace the value with a new Node that contains the old value AND the new one.
@@ -83,7 +85,7 @@ impl TSIMTree {
                             key = remaining_key;
                         }
                     }
-                },
+                }
                 ResolvedChild::InDomainOf(segment) => {
                     let borrowed_child = node.children[segment].as_mut();
                     let child = borrowed_child.expect("children[child_idx] must be Some(..)");
@@ -103,7 +105,7 @@ impl TSIMTree {
                             node = new_node;
                         }
                     }
-                },
+                }
             };
         }
     }
@@ -170,6 +172,7 @@ enum TSIMTreeNodeChild {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum TSIMTreeFault {
     InvalidSegment {
         len: u8,
@@ -180,7 +183,7 @@ enum TSIMTreeFault {
     },
 }
 
-#[derive(Debug,PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 /// Encodes the location of a child in a node.
 enum ResolvedChild<'k> {
     /// The queried key is outside the domain of any existing child.
@@ -254,10 +257,10 @@ impl TSIMTreeNode {
     fn resolve_child<'k>(&self, key: &'k [u8]) -> ResolvedChild<'k> {
         let mut left_segment_idx = 0;
         let mut right_segment_idx = self.children_count as usize;
-        assert_ne!(
-            self.children_count, 0,
-            "If there are no children there is no way to return a valid Resolved Child"
-        );
+
+        if self.children_count == 0 {
+            return ResolvedChild::Smallest;
+        }
         assert!(right_segment_idx as usize <= TREE_RADIX);
         // Binary search in the segments for the next hop:
         while left_segment_idx < right_segment_idx {
@@ -267,9 +270,7 @@ impl TSIMTreeNode {
                 (Ordering::Equal, remaining_key) => {
                     return ResolvedChild::ExactMatch(segment, remaining_key)
                 }
-                (Ordering::Greater,_)
-                    if (left_segment_idx + 1 == right_segment_idx) =>
-                {
+                (Ordering::Greater, _) if (left_segment_idx + 1 == right_segment_idx) => {
                     return ResolvedChild::InDomainOf(segment)
                 }
                 (Ordering::Greater, _) => left_segment_idx = segment,
@@ -280,7 +281,21 @@ impl TSIMTreeNode {
     }
 
     fn insert_child(&mut self, idx: usize, key_fragment: &[u8], child: TSIMTreeNodeChild) {
-        todo!("")
+        assert!(
+            (self.children_count as usize) < TREE_RADIX,
+            "Cannot insert into full node"
+        );
+
+        // Copy over all the key segments
+        if idx <= self.children_count as usize {
+            let (_unchanged, children) = self.children.split_at_mut(idx);
+            let (_unchanged, key_segments) = self.key_segments.split_at_mut(idx);
+            children.rotate_right(1);
+            key_segments.rotate_right(1);
+        }
+
+        self.set_segment(idx, key_fragment);
+        self.children[idx] = Some(child);
     }
 }
 
@@ -360,8 +375,6 @@ impl Debug for TSIMTreeNode {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
 
     #[test]
     fn test_comparison_behavior() {
@@ -380,14 +393,12 @@ mod test {
 
     #[test]
     fn test_node_resolving() {
-
         println!("Initializing Node");
         let mut node = TSIMTreeNode {
             key_segments: Default::default(),
             children: array::from_fn(|i| Some(TSIMTreeNodeChild::Value(vec![i as u8]))),
             children_count: TREE_RADIX as u8,
         };
-
 
         let first_key = 1 as u8;
         let last_key = TREE_RADIX as u8 + 1;
@@ -396,7 +407,7 @@ mod test {
 
         println!("Initializing Segments");
 
-        for (segment,key) in (0..TREE_RADIX).zip(first_key..last_key) {
+        for (segment, key) in (0..TREE_RADIX).zip(first_key..last_key) {
             let buf = vec![key];
             node.set_segment(segment, buf.as_slice());
         }
@@ -411,14 +422,13 @@ mod test {
         let v = vec![];
         let empty_slice: &[u8] = v.as_slice();
 
-        println!("Checking Assertions.");
+        dbg!(&node);
 
         // Since the keys are stored with +1 offset, if we search for 0, there is None, if we search for 1 we get the first element, at idx 0.
         assert_eq!(
             node.resolve_child(vec![first_key - 1].as_slice()),
             ResolvedChild::Smallest
         );
-        println!("Checking Assertions..");
 
         assert_eq!(
             node.resolve_child(vec![first_key].as_slice()),
@@ -426,22 +436,22 @@ mod test {
         );
         // looking for the last key and beyond, we return the last child
         assert_eq!(
-            node.resolve_child(vec![last_key].as_slice()),
-            ResolvedChild::ExactMatch(TREE_RADIX-1, empty_slice)
+            node.resolve_child(dbg![vec![last_key - 1].as_slice()]),
+            ResolvedChild::ExactMatch(TREE_RADIX - 1, empty_slice)
         );
         assert_eq!(
-            node.resolve_child(vec![last_key + 1].as_slice()),
-            ResolvedChild::InDomainOf(TREE_RADIX-1)
+            node.resolve_child(vec![last_key].as_slice()),
+            ResolvedChild::InDomainOf(TREE_RADIX - 1)
         );
     }
 
     #[test]
     fn test_basic_insert_and_get() {
-        let mut tree = TSIMTree::new();
-        tree.put(b"key1", b"val1".into());
-        tree.put(b"key2", b"val2".into());
+        let tree = TSIMTree::new();
+        dbg!(&tree).put(b"key1", b"val1".into());
+        dbg!(&tree).put(b"key2", b"val2".into());
 
-        assert_eq!(tree.get(b"key1"), Some(b"val1".to_vec()));
+        assert_eq!(dbg!(&tree).get(b"key1"), Some(b"val1".to_vec()));
         assert_eq!(tree.get(b"key2"), Some(b"val2".to_vec()));
     }
 
