@@ -1,0 +1,13 @@
+{
+    "version": "2.0.0",
+    "tasks": [{
+        "label": "replay-latest-rr-trace",
+        "type": "shell",
+        "command": "rr replay -s 1234 -d rust-gdb ./target/rr/$(cat ./target/rr/latest)",
+        "isBackground": true,
+        "group": {
+            "kind": "build",
+            "isDefault": true
+        }
+    }]
+}
