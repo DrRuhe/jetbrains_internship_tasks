@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc f42c25a7ac795c5ab6b9663a5a9ca89b8d8115e865b2e92fc5995b945f9c36c4 # shrinks to ops = [([], [])]
+cc cbe2aec03200d8f32e81caafc4ed4b9dce7fa0c6443684b0db8f188f4241738c # shrinks to ops = [([79, 0], []), ([79], []), ([0], [])]

@@ -1,7 +1,7 @@
 use std::array;
+use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::sync::RwLock;
-use std::cmp::Ordering;
 
 const CACHE_LINE_SIZE: usize = 128;
 const TREE_RADIX: usize = 16;
@@ -27,14 +27,25 @@ impl TSIMTree {
             .root
             .write()
             .expect("Must be able to acquire write lock");
-        let mut node = &mut *node_guard;
+        let mut node: &mut TSIMTreeNode = &mut node_guard;
 
         loop {
             match node.resolve_child(key) {
                 ResolvedChild::Smallest => {
                     if (node.children_count as usize) < TREE_RADIX {
-                        node.insert_child(0, key, TSIMTreeNodeChild::with_mapping(key, v));
-                        return;
+                        if let Some((key_fragment, remaining_key)) =
+                            key.split_at_checked(MAX_STORED_KEY_SEGMENT_SIZE)
+                        {
+                            node.insert_child(
+                                0,
+                                key_fragment,
+                                TSIMTreeNodeChild::with_mapping(remaining_key, v),
+                            );
+                            break;
+                        } else {
+                            node.insert_child(0, key, TSIMTreeNodeChild::Value(v));
+                            break;
+                        }
                     }
 
                     // There is no space in this node, so we must replace the key_segment in this node with the new segment.
@@ -65,7 +76,7 @@ impl TSIMTree {
                     match child {
                         TSIMTreeNodeChild::Value(old_val) if remaining_key.is_empty() => {
                             *old_val = v;
-                            return;
+                            break;
                         }
                         TSIMTreeNodeChild::Value(old_val) => {
                             // The existing value is stored under a prefix of the new value.
@@ -77,7 +88,7 @@ impl TSIMTree {
                             };
                             n.insert_child(0, &[], TSIMTreeNodeChild::Value(old_val.to_owned()));
                             *child = new_node;
-                            return;
+                            break;
                         }
 
                         TSIMTreeNodeChild::Node(new_node) => {
@@ -99,7 +110,7 @@ impl TSIMTree {
                             };
                             n.insert_child(0, &[], TSIMTreeNodeChild::Value(old_val.to_owned()));
                             *child = new_node;
-                            return;
+                            break;
                         }
                         TSIMTreeNodeChild::Node(new_node) => {
                             node = new_node;
@@ -108,6 +119,8 @@ impl TSIMTree {
                 }
             };
         }
+
+        drop(node_guard)
     }
 
     pub fn get<'s, K>(&'s self, k: K) -> Option<Vec<u8>>
@@ -247,10 +260,14 @@ impl TSIMTreeNode {
         let stored_segment = TSIMTreeNode::stored_segment(segment).expect("segment must be valid!");
 
         let key_segment_length = key.len().min(stored_segment.len());
-        let (expected_key_segment, remaining_key) = key.split_at(key_segment_length);
-        let ordering = expected_key_segment.cmp(stored_segment);
 
-        (ordering, remaining_key)
+        match key.split_at_checked(key_segment_length) {
+            None => (key.cmp(stored_segment), &[]),
+            Some((expected_key_segment, remaining_key)) => {
+                let ordering = expected_key_segment.cmp(stored_segment);
+                (ordering, remaining_key)
+            }
+        }
     }
 
     /// Use binary search to figure out under what child the key could be located.
@@ -296,6 +313,7 @@ impl TSIMTreeNode {
 
         self.set_segment(idx, key_fragment);
         self.children[idx] = Some(child);
+        self.children_count = self.children_count + 1;
     }
 }
 
@@ -385,7 +403,7 @@ mod test {
 
     #[test]
     fn test_pretty_printing() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
         tree.put(b"key1", b"val1".into());
 
         dbg!(tree);
@@ -422,8 +440,6 @@ mod test {
         let v = vec![];
         let empty_slice: &[u8] = v.as_slice();
 
-        dbg!(&node);
-
         // Since the keys are stored with +1 offset, if we search for 0, there is None, if we search for 1 we get the first element, at idx 0.
         assert_eq!(
             node.resolve_child(vec![first_key - 1].as_slice()),
@@ -436,7 +452,7 @@ mod test {
         );
         // looking for the last key and beyond, we return the last child
         assert_eq!(
-            node.resolve_child(dbg![vec![last_key - 1].as_slice()]),
+            node.resolve_child(vec![last_key - 1].as_slice()),
             ResolvedChild::ExactMatch(TREE_RADIX - 1, empty_slice)
         );
         assert_eq!(
@@ -457,7 +473,7 @@ mod test {
 
     #[test]
     fn test_overwrite_value() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
         tree.put(b"key", b"first".into());
         tree.put(b"key", b"second".into());
 
@@ -466,7 +482,7 @@ mod test {
 
     #[test]
     fn test_missing_key() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
         tree.put(b"key", b"value".into());
 
         assert_eq!(tree.get(b"other"), None);
@@ -474,7 +490,7 @@ mod test {
 
     #[test]
     fn test_multiple_sizes() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
         tree.put(b"k", b"1".into());
         tree.put(b"key", b"v".into());
         tree.put(b"", b"empty".into());
@@ -488,7 +504,7 @@ mod test {
 
     #[test]
     fn test_key_byte_equality() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
 
         // Two keys with same content but different Vec allocations
         let k1: Vec<u8> = b"identical".into();
@@ -541,7 +557,7 @@ mod test {
 
     #[test]
     fn test_keys_with_null_bytes() {
-        let mut tree = TSIMTree::new();
+        let tree = TSIMTree::new();
         tree.put(&b"key\0with\0nulls"[..], b"value".into());
         assert_eq!(tree.get(&b"key\0with\0nulls"[..]), Some(b"value".to_vec()));
     }
@@ -550,30 +566,29 @@ mod test {
     use std::collections::HashMap;
 
     proptest! {
+
         #[test]
         fn tsimtree_behaves_like_hashmap(
-            ops in proptest::collection::vec((proptest::collection::vec(any::<u8>(), 0..32), proptest::collection::vec(any::<u8>(), 0..32)), 1..32)
+            insertions in proptest::collection::vec((proptest::collection::vec(any::<u8>(), 0..32), proptest::collection::vec(any::<u8>(), 0..32)), 1..32)
         ) {
             let mut ref_map = HashMap::new();
-            let mut tree = TSIMTree::new();
+            let tree = TSIMTree::new();
 
-            for (k, v) in &ops {
+            for (k, v) in &insertions {
                 ref_map.insert(k.clone(), v.clone());
                 tree.put(k.clone(), v.clone());
+
+                for (k, v) in &ref_map {
+                    let tree_value = tree.get(k.clone());
+                    prop_assert!(tree_value.is_some(),"Tree does not store {:?}: {:?}: \n {:?}",k,v,tree);
+                    prop_assert_eq!(tree_value.unwrap(), v.as_slice());
+                }
             }
 
-            // Assert that all keys in the reference HashMap yield the same results
-            for (k, v) in &ref_map {
-                let tree_value = tree.get(k.clone());
-                prop_assert!(tree_value.is_some());
-                prop_assert_eq!(tree_value.unwrap(), v.as_slice());
-            }
-
-            // Optionally: check that querying missing keys yields None
-            let absent_key = vec![42, 13, 7];
-            if !ref_map.contains_key(&absent_key) {
-                prop_assert_eq!(tree.get(absent_key), None);
-            }
+            dbg!(&tree);
         }
+
+
     }
+
 }

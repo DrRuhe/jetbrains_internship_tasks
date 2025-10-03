@@ -53,42 +53,24 @@ Therefore I implement these methods with the given signatures:
 
 The internals of a tree node are like this:
 - the tree has `TREE_RADIX`-ary nodes.
-- each node stores key segments. The key segments are ordered.
-- each key segment points to:
-  -  a value, in the case of a direct match
+- each node stores key segments. The key segments are ordered inside a node.
+- each key segment has an associated child that points to:
+  -  a value, in the case where this key is directly part of the tree
   -  another node, which stores values geq than the segment.
-
-- insertion prefers nodes closer to the root
-  - when resolving, remember the first node that still has space
-  - if the exact value is found, it is updated.
-  - if the exact value is not found, insert the node:
-
-  - problem: insertion at a node closer to the root requires rebalancing of the tree to ensure tree invariants hold.
-    - if the path to the leaf is not using the last edge of each node, all of the nodes between the edge on the path and the later edges in a node have to be migrated.
-    - idea: walk back up the tree, collecting all of these nodes whose keys , and if the new node is filled halfway, we insert the node.
-      - but the problem would be keeping all these values as mutable references without triggering the borrow checker.
-  - problem: if there is no node with space left, we must replace a value pointer with a new node.
+- the child of a node that is referenced by a key_segment contains a subtree that stores values with keys greater or equal to the
 
 
+## Testing Strategy
+I implement a small suite of unit tests and also rely on proptests, which uncover edge cases I have yet to handle.
 
-- TODO figure out if the key slicing logic will cause problems when the key segments are prefixes of the key.
+## Problems:
+The implementation still has these fundamental issues:
 
+- invalid keys can return values
+  - keys that should not actually exist can resolve to values due to the way a key in the domain of a child will search in the child without advancing the key, but therefore a carefully constructed key will resolve to the same value.
 
-e.g.
+- tree balancing & performance
+  - no rebalancing operations are implemented, so the tree will stay unbalanced, hurting performance.
 
-```md
-- "a"
-  - ".a"
-  - ".b"
-  - ".c"
-- "b"
-  -> "v2"
-- "c"
-  -> "v3"
-
-```
-
-
-
-
-Insertion follows these rules:
+## Learnings
+Taking this implementation challenge was interesting. Having intentionally stayed clear of researching best practices for implementing in-memory trees I have re-discovered certain patterns that work and others that do not.
